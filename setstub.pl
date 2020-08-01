@@ -104,7 +104,46 @@ die "$0: positive VirtualAddress not found: $ARGV[0]\n" if !$va_min;
 die "$0: fatal: open for reading: $ARGV[1]: $!\n" if
     !open(STUB, "< " . fixfnws($ARGV[1]));
 binmode(STUB);
-my $stub = join("", <STUB>);
+my $stub;
+# The file STUB may contaian more than just a DOS stub (e.g. a full PE .exe).
+# We only read to DOS stub (up to $image_size from the MZ .exe header).
+{
+  die "$0: fatal: stub too short: $ARGV[1]\n" if
+     (sysread(STUB, $stub, 32) or 0) != 32;
+  my($mz_signature, $image_size_lo, $image_size_hi, $relocation_count,
+     $hdr_paragraph_size) = unpack("v5", substr($stub, 0, 10));
+  my $image_size = ($image_size_hi << 9) - ((-$image_size_lo) & 511);
+  die "$0: fatal: stub image too short: $ARGV[1]\n" if
+      $image_size <= ($hdr_paragraph_size << 4) or $image_size < 28;
+  if ($image_size <= 32) {
+    $stub .= "\0" x (32 - $image_size);
+  } else {
+    die "$0: fatal: stub too short: $ARGV[1]\n" if
+       (sysread(STUB, $stub, $image_size - 32, 32) or 0) != $image_size - 32;
+    if ($image_size <= 64) {
+      $stub .= "\0" x (64 - $image_size);
+    } elsif ($hdr_paragraph_size <= 4 or $relocation_count) {
+    } else {
+      # Remove unused bytes between offset 64 and the code of the DOS stub.
+      # This is the reverse of the stub splitting below, so that reapplying the
+      # same stub (of the right size) becomes idempotent.
+      my $stub_size_delta = ($hdr_paragraph_size - 4) << 4;
+      substr($stub, 32, $stub_size_delta, "");
+      $hdr_paragraph_size = 4; $image_size -= $stub_size_delta;
+      die "$0: assert: bad shortened stub image size\n" if
+          length($stub) != $image_size;
+      $image_size_hi = ($image_size + 511) >> 9;
+      $image_size_lo = $image_size & 511;
+      substr($stub, 0, 10, pack(
+          "v5", $mz_signature, $image_size_lo, $image_size_hi,
+          $relocation_count, $hdr_paragraph_size));
+      # Also adjust the $overlay_number in case the DOS stub stores its own
+      # size there.
+      substr($stub, 26, 2, pack("v", unpack("v", substr($stub, 26, 2)) -
+                                     $stub_size_delta));
+    }
+  }
+}
 close(STUB);
 die "$0: fatal: bad stub: $ARGV[1]\n" if length($stub) < 64 or $stub !~m@\AMZ@;
 $stub .= "\0" x (-length($stub) & 3);  # Align to 4.
@@ -120,12 +159,10 @@ if ($trylshs > 0x800 or  # Required by Win32s.
   my $stub_size = length($stub);
   my $max_stub_size = ($va_min < 0x800 ? 0x800 : $va_min) -
       length($h) - length($s);
-  # TODO(pts): Allow taking a stub from an existing PE .exe.
-  # TODO(pts): Make splitting idempotent.
-  if ($may_split_stub) {
-    # Beginning of DOS MZ .exe header.
+  if ($may_split_stub) {  # Split the stub.
+    # Beginning of DOS stub MZ .exe header.
     my($mz_signature, $image_size_lo, $image_size_hi, $relocation_count,
-       $hd_paragraph_size) = unpack("v5", substr($stub, 0, 10));
+       $hdr_paragraph_size) = unpack("v5", substr($stub, 0, 10));
     die "$0: fatal: stub is too long " .
         "($stub_size > $max_stub_size) " .
         "(trylshs = $trylshs > $va_min), and has relocations: $ARGV[1]\n" if
@@ -134,25 +171,27 @@ if ($trylshs > 0x800 or  # Required by Win32s.
         !$image_size_hi;
     my $image_size = ($image_size_hi << 9) - ((-$image_size_lo) & 511);
     die "$0: fatal: code too short in stub: $ARGV[1]\n" if
-         $image_size <= ($hd_paragraph_size << 4);
+         $image_size <= ($hdr_paragraph_size << 4);
     my $newlshs = 32 + length($h) + length($s);
-    $stub2 = ("\0" x (-$newlshs & 15)) . substr($stub, $hd_paragraph_size << 4);
-    my $orig_hd_paragraph_size = $hd_paragraph_size;
-    $hd_paragraph_size = ($newlshs + 15) >> 4;
-    my $stub_size_delta = ($hd_paragraph_size - $orig_hd_paragraph_size) << 4;
+    $stub2 = ("\0" x (-$newlshs & 15)) .
+        substr($stub, $hdr_paragraph_size << 4);
+    my $orig_hdr_paragraph_size = $hdr_paragraph_size;
+    $hdr_paragraph_size = ($newlshs + 15) >> 4;
+    my $stub_size_delta =
+        ($hdr_paragraph_size - $orig_hdr_paragraph_size) << 4;
     $image_size = $newlshs + length($stub2);
     $image_size_hi = ($image_size + 511) >> 9;
     $image_size_lo = $image_size & 511;
     $stub = pack("v5a22", $mz_signature, $image_size_lo, $image_size_hi,
-        $relocation_count, $hd_paragraph_size, substr($stub, 10, 22));
+        $relocation_count, $hdr_paragraph_size, substr($stub, 10, 22));
     # Also adjust the $overlay_number in case the DOS stub stores its own size
     # there.
     substr($stub, 26, 2, pack("v", unpack("v", substr($stub, 26, 2)) +
                                    $stub_size_delta));
     substr($stub2, 0, 32) = substr($stub, 0, 32) if
-        $orig_hd_paragraph_size == 0;
+        $orig_hdr_paragraph_size == 0;
     substr($stub2, 0, 16) = substr($stub, 0, 16) if
-        $orig_hd_paragraph_size == 1;
+        $orig_hdr_paragraph_size == 1;
   } else {
     print STDERR "$0: warning: stub is too long " .
         "($stub_size > $max_stub_size) " .
