@@ -24,15 +24,26 @@ use integer;
 use strict;
 
 my $may_split_stub = 1;
+my $may_remove_dll = 0;
+my $subsystem = 0;
 while (@ARGV) {
   if ($ARGV[0] eq "--nosplit")  { $may_split_stub = 0; shift @ARGV; }
+  elsif ($ARGV[0] eq "--undll")  { $may_remove_dll = 1; shift @ARGV; }
+  elsif ($ARGV[0] eq "-mconsole") { $subsystem = 3; shift @ARGV; }
+  elsif ($ARGV[0] eq "-mwindows") { $subsystem = 2; shift @ARGV; }
   elsif ($ARGV[0] !~ m@-@) { last }
   elsif ($ARGV[0] eq "--") { shift @ARGV; last }
+  else { die "$0: fatal: unknown command-line flag: $ARGV[0]\n" }
 }
 die "setstub.pl: replace DOS stub in Win32 PE .exe\n" .
     "This is free software, GNU GPL >=2.0. There is NO WARRANTY. " .
     "Use at your risk.\n" .
-    "Usage: $0: [--nosplit] <in-pe.exe> <stub.bin> <out-pe.exe>\n" if
+    "Usage: $0: [<flag> ...] <in-pe.exe> <stub.bin> <out-pe.exe>\n" .
+    "Flags:\n" .
+    "--undll: convert DLL to .exe\n" .
+    "-mconsole: change subsystem to console (CUI)\n" .
+    "-mwindows: change subsystem to Windows (GUI)\n" .
+    "--nosplit: don't split large stubs, breaking compatibility\n" if
    @ARGV != 3;
 die "$0: fatal: input and output file must be different\n" if
     $ARGV[0] eq $ARGV[2];
@@ -162,11 +173,23 @@ if ($opthd_size < 160 + 8 - 24 or !unpack("V", substr($h, 160, 4))) {
   print STDERR "$0: warning: base relocations missing, " .
       "will not work on Win32s: $ARGV[0]\n";
 }
-if (unpack("v", substr($h, 22, 2)) & 1) {
-  # IMAGE_FILE_RELOCS_STRIPPED in Characteristics.
+my $ch = unpack("v", substr($h, 22, 2));  # Characteristics.
+if ($ch & 1) {  # IMAGE_FILE_RELOCS_STRIPPED.
   print STDERR "$0: warning: relocations stripped, " .
       "will not work on Win32s: $ARGV[0]\n";
 }
+if ($ch & 0x2000) {  # IMAGE_FILE_DLL.
+  if ($may_remove_dll) {
+    $ch &= ~0x2000;
+    substr($h, 22, 2, pack("v", $ch));
+  } else {
+    print STDERR "$0: warning: file is a DLL, may not work: $ARGV[0]\n";
+  }
+}
+if ($subsystem) {
+  substr($h, 92, 2, pack("v", $subsystem));  # Subsystem.
+}
+
 
 # TODO(pts): Warn for Win32s incompatibility if
 # IMAGE_DIRECTORY_ENTRY_BASERELOC.VirtualAddress is 0.
