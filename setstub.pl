@@ -155,10 +155,6 @@ my $stub;
       substr($stub, 0, 10, pack(
           "v5", $mz_signature, $image_size_lo, $image_size_hi,
           $relocation_count, $hdr_paragraph_size));
-      # Also adjust the $overlay_number in case the DOS stub stores its own
-      # size there.
-      substr($stub, 26, 2, pack("v", unpack("v", substr($stub, 26, 2)) -
-                                     $stub_size_delta));
     }
   }
 }
@@ -202,10 +198,6 @@ if ($trylshs > 0x800 or  # Required by Win32s.
     $image_size_lo = $image_size & 511;
     $stub = pack("v5a22", $mz_signature, $image_size_lo, $image_size_hi,
         $relocation_count, $hdr_paragraph_size, substr($stub, 10, 22));
-    # Also adjust the $overlay_number in case the DOS stub stores its own size
-    # there.
-    substr($stub, 26, 2, pack("v", unpack("v", substr($stub, 26, 2)) +
-                                   $stub_size_delta));
     substr($stub2, 0, 32) = substr($stub, 0, 32) if
         $orig_hdr_paragraph_size == 0;
     substr($stub2, 0, 16) = substr($stub, 0, 16) if
