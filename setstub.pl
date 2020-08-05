@@ -271,7 +271,7 @@ die "$0: error writing PE header to: $outpe: $!\n" if
     (syswrite(OUTPE, $h, length($h)) or 0) != length($h);
 for (my $si = 0; $si < length($s); $si += 40) {
   my $ptrd = unpack("V", substr($s, $si + 20, 4));  # PointerToRawData.
-  substr($s, $si + 20, 4, pack("V", $ptrd + $ptrd_delta));
+  substr($s, $si + 20, 4, pack("V", $ptrd + $ptrd_delta)) if $ptrd;
 }
 $s .= $stub2;
 $s .= "\0" x (-(length($stub) + length($h) + length($s)) & 511);
