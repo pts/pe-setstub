@@ -112,6 +112,7 @@ die "$0: fatal: open for reading: $ARGV[1]: $!\n" if
     !open(STUB, "< " . fixfnws($ARGV[1]));
 binmode(STUB);
 my $stub;
+my $does_stub_overlap_pehd_ofs = 0;
 # The file STUB may contaian more than just a DOS stub (e.g. a full PE .exe).
 # We only read to DOS stub (up to $image_size from the MZ .exe header).
 {
@@ -122,6 +123,10 @@ my $stub;
   my $image_size = ($image_size_hi << 9) - ((-$image_size_lo) & 511);
   die "$0: fatal: stub image too short: $ARGV[1]\n" if
       $image_size <= ($hdr_paragraph_size << 4) or $image_size < 28;
+  # TODO(pts): Also check whether the relocations overlap.
+  $does_stub_overlap_pehd_ofs =
+      ($hdr_paragraph_size < 4 and $image_size >= 60);
+  my $stub_start = ($hdr_paragraph_size << 4);
   if ($image_size <= 32) {
     $stub .= "\0" x (32 - $image_size);
   } else {
@@ -167,13 +172,17 @@ $trylshs += -$trylshs & 511;  # Align to 512.
 # arbitrarily large (tested with 0x30000), as long as it's divisible by
 # 0x200, even on Win32s.
 my $stub2 = "";
-if ($trylshs > 0x800 or  # Required by Win32s.
-     # Required by Windows NT 3.51, Windows XP etc. Wine 5.0 works without it.
-    $trylshs > $va_min) {  # Split the stub to 32 bytes + rest.
+my $stub_split_reasons = 0;
+$stub_split_reasons |= 1 if
+    $trylshs > 0x800 or  # Required by Win32s.
+    # Required by Windows NT 3.51, Windows XP etc. Wine 5.0 works without it.
+    $trylshs > $va_min;
+$stub_split_reasons |= 2 if $does_stub_overlap_pehd_ofs;
+if ($stub_split_reasons) {  # Maybe split the stub to 32 bytes + rest.
   my $stub_size = length($stub);
   my $max_stub_size = ($va_min < 0x800 ? 0x800 : $va_min) -
       length($h) - length($s);
-  if ($may_split_stub) {  # Split the stub.
+  if ($may_split_stub) {  # Split the stub to 32 bytes + rest.
     # Beginning of DOS stub MZ .exe header.
     my($mz_signature, $image_size_lo, $image_size_hi, $relocation_count,
        $hdr_paragraph_size) = unpack("v5", substr($stub, 0, 10));
@@ -205,7 +214,10 @@ if ($trylshs > 0x800 or  # Required by Win32s.
   } else {
     print STDERR "$0: warning: stub is too long " .
         "($stub_size > $max_stub_size) " .
-        "(trylshs = $trylshs > $va_min), will work in Wine only: $ARGV[1]\n";
+        "(trylshs = $trylshs > $va_min), will work in Wine only: $ARGV[1]\n"
+        if $stub_split_reasons & 1;
+    print STDERR "$0: warning: stub overlaps PE header offset, " .
+        "it should be split: $ARGV[0]\n" if $stub_split_reasons & 2;
   }
 }
 if (length($stub) >= 64) {
